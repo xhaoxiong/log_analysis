@@ -4,10 +4,14 @@ import (
 	"strings"
 	"time"
 	"fmt"
+	"os"
+	"bufio"
+	"io"
+	"log"
 )
 
 type Reader interface {
-	Read(rc chan string)
+	Read(rc chan []byte)
 }
 
 type Writer interface {
@@ -23,26 +27,55 @@ type WriteToInfluxDB struct {
 }
 
 type LogProcess struct {
-	rc    chan string
+	rc    chan []byte
 	wc    chan string
 	read  Reader
 	write Writer
 }
 
-func (r *ReadFromFile) Read(rc chan string) {
+func (r *ReadFromFile) Read(rc chan []byte) {
 	//读取数据
-	line := "message"
-	rc <- line
+
+	f, err := os.Open(r.path)
+	if err != nil {
+		panic(fmt.Sprintf("open file fail:%s", err.Error()))
+	}
+
+	//从文件末尾逐行读取文件内容
+	//f.Seek(0, 2)
+
+	rd := bufio.NewReader(f)
+
+	for {
+
+		line, err := rd.ReadBytes('\n')
+
+		if err == io.EOF {
+			log.Println(err)
+			time.Sleep(500 * time.Millisecond)
+			continue
+		} else if err != nil {
+			panic(fmt.Sprintf("ReadBytes error: %s", err.Error()))
+		}
+		rc <- line[:len(line)-1]
+
+	}
+
 }
 
 func (l *LogProcess) Process() {
 	//解析数据
-	data := <-l.rc
-	l.wc <- strings.ToUpper(data)
+	for v := range l.rc {
+		l.wc <- strings.ToUpper(string(v))
+	}
+
 }
 
 func (w *WriteToInfluxDB) Write(wc chan string) {
-	fmt.Println(<-wc)
+	for v := range wc {
+		fmt.Println(v)
+	}
+
 }
 
 func (l *LogProcess) ReadFromFile() {
@@ -56,7 +89,7 @@ func (l *LogProcess) WriteToInfluxDB() {
 func main() {
 
 	r := &ReadFromFile{
-		path: "",
+		path: "/var/log/nginx/access.log",
 	}
 
 	w := &WriteToInfluxDB{
@@ -64,15 +97,14 @@ func main() {
 	}
 
 	lp := &LogProcess{
-		rc:    make(chan string),
+		rc:    make(chan []byte),
 		wc:    make(chan string),
 		read:  r,
 		write: w,
 	}
 
-
 	go lp.read.Read(lp.rc)
 	go lp.Process()
 	go lp.write.Write(lp.wc)
-	time.Sleep(1 * time.Second)
+	time.Sleep(30 * time.Second)
 }
