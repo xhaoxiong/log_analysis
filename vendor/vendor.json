@@ -1,6 +1,19 @@
 {
 	"comment": "",
 	"ignore": "test",
-	"package": [],
+	"package": [
+		{
+			"checksumSHA1": "Y4a50mMFMGzXe9+OgXyfC/iL6JE=",
+			"path": "github.com/influxdata/influxdb",
+			"revision": "fbb3486352531d8bc75178f229585b0d7258399c",
+			"revisionTime": "2018-04-23T18:10:13Z"
+		},
+		{
+			"checksumSHA1": "pvsvnyY+2ketunnmgtyfKo+eX30=",
+			"path": "github.com/influxdata/influxdb/client/v2",
+			"revision": "fbb3486352531d8bc75178f229585b0d7258399c",
+			"revisionTime": "2018-04-23T18:10:13Z"
+		}
+	],
 	"rootPath": "mike"
 }

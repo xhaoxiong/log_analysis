@@ -11,6 +11,10 @@ import (
 	"regexp"
 	"strconv"
 	"net/url"
+	"github.com/influxdata/influxdb/client/v2"
+	"flag"
+	"net/http"
+	"encoding/json"
 )
 
 type Reader interface {
@@ -45,7 +49,67 @@ type Message struct {
 	BytesSent                  int
 	Scheme                     string
 	Url                        string
-	//UpstreamTime, RequestTime  float64
+	UpstreamTime, RequestTime  float64
+}
+
+type SystemInfo struct {
+	HandleLine   int     `json:"handleLine"`
+	Tps          float64 `json:"tps"`
+	ReadChanLen  int     `json:"readChanLen"`
+	WriteChanLen int     `json:"writeChanLen"`
+	RunTime      string  `json:"runTime"`
+	ErrNum       int     `json:"errNum"`
+}
+
+type Monitor struct {
+	startTime time.Time
+	data      SystemInfo
+	tpsSli    []int
+}
+
+const (
+	TypeHandleLine = 0
+	TypeErrNum     = 1
+)
+
+var TypeMonitorChan = make(chan int, 200)
+
+func (m *Monitor) start(lp *LogProcess) {
+	go func() {
+		for n := range TypeMonitorChan {
+			switch n {
+			case TypeErrNum:
+				m.data.ErrNum += 1
+			case TypeHandleLine:
+				m.data.HandleLine += 1
+			}
+		}
+	}()
+
+	ticker := time.NewTicker(time.Second * 5)
+	go func() {
+		<-ticker.C
+		m.tpsSli = append(m.tpsSli, m.data.HandleLine)
+		if len(m.tpsSli) > 2 {
+			m.tpsSli = m.tpsSli[1:]
+		}
+	}()
+
+	http.HandleFunc("/monitor", func(writer http.ResponseWriter, request *http.Request) {
+		m.data.RunTime = time.Now().Sub(m.startTime).String()
+		m.data.ReadChanLen = len(lp.rc)
+		m.data.WriteChanLen = len(lp.wc)
+
+		if len(m.tpsSli) >= 2 {
+			m.data.Tps = float64(m.tpsSli[1]-m.tpsSli[0]) / 5
+		}
+		ret, _ := json.MarshalIndent(m.data, "", "\t")
+
+		io.WriteString(writer, string(ret))
+	})
+
+	http.ListenAndServe(":8999", nil)
+
 }
 
 /*14.215.176.15 - - [23/APR/2018:21:43:39 +0800]
@@ -61,8 +125,8 @@ func (r *ReadFromFile) Read(rc chan []byte) {
 		panic(fmt.Sprintf("open file fail:%s", err.Error()))
 	}
 
-	//从文件末尾逐行读取文件内容当在空文件中需要加入此注释掉的代码
-	//f.Seek(0, 2)
+	//跳到文件末尾
+	f.Seek(0, 2)
 
 	rd := bufio.NewReader(f)
 
@@ -70,12 +134,13 @@ func (r *ReadFromFile) Read(rc chan []byte) {
 
 		line, err := rd.ReadBytes('\n')
 		if err == io.EOF {
-			log.Println(err)
+
 			time.Sleep(500 * time.Millisecond)
 			continue
 		} else if err != nil {
 			panic(fmt.Sprintf("ReadBytes error: %s", err.Error()))
 		}
+		TypeMonitorChan <- TypeHandleLine
 		rc <- line[:len(line)-1]
 
 	}
@@ -119,7 +184,7 @@ func (l *LogProcess) Process() {
 		}
 		*/
 		if len(ret) != 10 {
-
+			TypeMonitorChan <- TypeErrNum
 			log.Println("FindStringSubmatch fail:", string(v))
 			continue
 		}
@@ -142,6 +207,7 @@ func (l *LogProcess) Process() {
 		sp := strings.Split(ret[5], " ")
 
 		if len(sp) != 3 {
+			TypeMonitorChan <- TypeErrNum
 			log.Println("strings.Split fail:", ret[5])
 			continue
 		}
@@ -152,6 +218,7 @@ func (l *LogProcess) Process() {
 		u, err := url.Parse(sp[1])
 
 		if err != nil {
+			TypeMonitorChan <- TypeErrNum
 			log.Println("url parse fail:", err)
 			continue
 		}
@@ -173,39 +240,93 @@ func (l *LogProcess) Process() {
 }
 
 func (w *WriteToInfluxDB) Write(wc chan *Message) {
-	for v := range wc {
-		fmt.Println(v)
+
+	sp := strings.Split(w.influxDBDsn, "@")
+
+	// Create a new HTTPClient
+	c, err := client.NewHTTPClient(client.HTTPConfig{
+		Addr:     sp[0],
+		Username: sp[1],
+		Password: sp[2],
+	})
+	if err != nil {
+		log.Fatal(err)
 	}
+	defer c.Close()
 
-}
+	for v := range wc {
+		// Create a new point batch
+		bp, err := client.NewBatchPoints(client.BatchPointsConfig{
+			Database:  sp[3],
+			Precision: sp[4],
+		})
+		if err != nil {
+			log.Fatal(err)
+		}
 
-func (l *LogProcess) ReadFromFile() {
+		// Create a point and add to batch
+		tags := map[string]string{"Path": v.Resource, "Method": v.Method, "Scheme": v.Scheme, "Status": v.Status, "Protocol": v.Protocol}
+		fields := map[string]interface{}{
+			"RequestTime": 2.0,
+			"BytesSent":   v.BytesSent,
+		}
 
-}
+		pt, err := client.NewPoint("nginx_log", tags, fields, v.TimeLocal)
+		if err != nil {
+			log.Fatal(err)
+		}
+		bp.AddPoint(pt)
 
-func (l *LogProcess) WriteToInfluxDB() {
+		// Write the batch
+		if err := c.Write(bp); err != nil {
+			log.Fatal(err)
+		}
+
+		// Close client resources
+		if err := c.Close(); err != nil {
+			log.Fatal(err)
+		}
+
+		log.Println("write success")
+	}
 
 }
 
 func main() {
 
+	var path, influxDsn string
+	flag.StringVar(&path, "path", "/var/log/nginx/access.log", "read file path")
+	flag.StringVar(&influxDsn, "influxDsn", "http://127.0.0.1:8086@haoxiong@8080@nginx_log@s", "influx data source")
+	flag.Parse()
 	r := &ReadFromFile{
-		path: "/var/log/nginx/access.log",
+		path: path,
 	}
 
 	w := &WriteToInfluxDB{
-		influxDBDsn: "",
+		influxDBDsn: influxDsn,
 	}
 
 	lp := &LogProcess{
-		rc:    make(chan []byte),
+		rc:    make(chan []byte, 200),
 		wc:    make(chan *Message),
 		read:  r,
 		write: w,
 	}
 
 	go lp.read.Read(lp.rc)
-	go lp.Process()
-	go lp.write.Write(lp.wc)
-	time.Sleep(30 * time.Second)
+	for i := 0; i < 2; i++ {
+		go lp.Process()
+
+	}
+	for i := 0; i < 4; i++ {
+		go lp.write.Write(lp.wc)
+	}
+
+	m := &Monitor{
+		startTime: time.Now(),
+		data:      SystemInfo{},
+	}
+
+	m.start(lp)
+	time.Sleep(100000 * time.Second)
 }
