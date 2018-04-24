@@ -326,7 +326,6 @@ func main() {
 		startTime: time.Now(),
 		data:      SystemInfo{},
 	}
-
+	//监听一个端口阻塞main
 	m.start(lp)
-	time.Sleep(100000 * time.Second)
 }
