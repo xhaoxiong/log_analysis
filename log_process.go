@@ -126,23 +126,25 @@ func (r *ReadFromFile) Read(rc chan []byte) {
 	}
 
 	//跳到文件末尾
-	f.Seek(0, 2)
+	//f.Seek(0, 2)
 
 	rd := bufio.NewReader(f)
 
 	for {
 
 		line, err := rd.ReadBytes('\n')
+		fmt.Println("this is read", string(line))
 		if err == io.EOF {
-
+			fmt.Println(err)
 			time.Sleep(500 * time.Millisecond)
 			continue
 		} else if err != nil {
 			panic(fmt.Sprintf("ReadBytes error: %s", err.Error()))
 		}
 		TypeMonitorChan <- TypeHandleLine
-		rc <- line[:len(line)-1]
-
+		if string(line) != "" {
+			rc <- line[:len(line)-1]
+		}
 	}
 
 }
@@ -155,14 +157,14 @@ func (l *LogProcess) Process() {
 	/**
 	  测试flag
 	*/
-	//flag := 0
+	flag := 0
 	loc, _ := time.LoadLocation("Asia/Shanghai")
 	for v := range l.rc {
 
 		ret := r.FindStringSubmatch(string(v))
 
 		/*测试**/
-		/*
+
 		if flag != 2 {
 			sp := strings.Split(ret[5], " ")
 
@@ -182,7 +184,7 @@ func (l *LogProcess) Process() {
 			fmt.Println(ret[8])
 			flag++
 		}
-		*/
+
 		if len(ret) != 10 {
 			TypeMonitorChan <- TypeErrNum
 			log.Println("FindStringSubmatch fail:", string(v))
@@ -240,7 +242,7 @@ func (l *LogProcess) Process() {
 }
 
 func (w *WriteToInfluxDB) Write(wc chan *Message) {
-
+	fmt.Println("THIS IS WRITE", wc)
 	sp := strings.Split(w.influxDBDsn, "@")
 
 	// Create a new HTTPClient
@@ -255,6 +257,7 @@ func (w *WriteToInfluxDB) Write(wc chan *Message) {
 	defer c.Close()
 
 	for v := range wc {
+
 		// Create a new point batch
 		bp, err := client.NewBatchPoints(client.BatchPointsConfig{
 			Database:  sp[3],
